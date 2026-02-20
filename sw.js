@@ -2,6 +2,7 @@ const CACHE_NAME = 'curling-game-v1';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
+  './icon.png',
   './css/style.css',
   './js/main.js',
   './js/physics.js',
