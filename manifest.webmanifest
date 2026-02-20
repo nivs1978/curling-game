@@ -1,0 +1,18 @@
+{
+  "name": "Curling",
+  "short_name": "Curling",
+  "description": "Interactive curling game simulator with realistic physics.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0d47a1",
+  "theme_color": "#0d47a1",
+  "icons": [
+    {
+      "src": "img/golden_brush_stick_cup.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
