@@ -34,8 +34,6 @@ const DEFAULT_COLLISION_SPIN_TRANSFER = 0.3;
 const DEFAULT_COLLISION_SPIN_DAMPING = 0.001;
 const DEFAULT_COLLISION_TANGENTIAL_LOSS = 0.1;
 const COLLISION_EPSILON = 1e-4;
-const DEFAULT_PATH_SAMPLE_INTERVAL = 1.0;
-const MAX_PATH_SAMPLE_POINTS = 240;
 
 export class PhysicsEngine {
   constructor({
@@ -60,7 +58,9 @@ export class PhysicsEngine {
     onStoneStopped,
     onHogSplit,
     onHogNearCross,
-    onStoneReleased
+    onStoneReleased,
+    onStoneCollision,
+    onStoneOut
   }) {
     this.frictionBaseline = frictionBaseline;
     this.frictionSpeedFactor = frictionSpeedFactor;
@@ -74,8 +74,6 @@ export class PhysicsEngine {
     this.collisionSpinTransfer = collisionSpinTransfer;
     this.collisionSpinDamping = collisionSpinDamping;
     this.collisionTangentialLoss = collisionTangentialLoss;
-    this.pathSampleInterval = DEFAULT_PATH_SAMPLE_INTERVAL;
-    this.maxPathSamples = MAX_PATH_SAMPLE_POINTS;
     this.launchY = launchY;
     this.stoneRadius = stoneRadius;
     this.hogLineNear = hogLineNear;
@@ -92,6 +90,17 @@ export class PhysicsEngine {
     this.onHogSplit = onHogSplit;
     this.onHogNearCross = onHogNearCross;
     this.onStoneReleased = onStoneReleased;
+    this.onStoneCollision = onStoneCollision;
+    this.onStoneOut = onStoneOut;
+    this.sweepState = null;
+  }
+
+  setSweepState(sweepState) {
+    this.sweepState = sweepState ?? null;
+  }
+
+  clearSweepState() {
+    this.sweepState = null;
   }
 
   initializeStones(stoneConfigs = []) {
@@ -115,7 +124,6 @@ export class PhysicsEngine {
       stone.rotationRate = 0;
       stone.rotationActivated = false;
       stone.hasStoppedNotified = true;
-      this.resetStonePath(stone);
       this.attachTiming(stone);
       const key = this.makeStoneKey(stone.color, stone.number);
       this.stoneInventory.set(key, stone);
@@ -166,7 +174,6 @@ export class PhysicsEngine {
     stone.isLaunched = true;
     stone.isOut = false;
     stone.hasStoppedNotified = false;
-    this.resetStonePath(stone);
     this.attachTiming(stone);
 
     if (this.onStoneReleased) {
@@ -220,8 +227,16 @@ export class PhysicsEngine {
       }
 
       const speed = Math.hypot(stone.velocity.vx, stone.velocity.vy);
+      const sweepMatch =
+        this.sweepState &&
+        this.sweepState.key === this.makeStoneKey(stone.color, stone.number)
+          ? this.sweepState
+          : null;
+      const frictionMultiplier = sweepMatch?.frictionMultiplier ?? 1;
+      const curlMultiplier = sweepMatch?.curlMultiplier ?? 1;
       const friction =
-        this.frictionBaseline + this.frictionSpeedFactor / (speed + this.frictionLowSpeedEps);
+        (this.frictionBaseline + this.frictionSpeedFactor / (speed + this.frictionLowSpeedEps)) *
+        frictionMultiplier;
 
       if (rotationRate !== 0) {
         const angularSpeed = Math.abs(rotationRate);
@@ -239,20 +254,17 @@ export class PhysicsEngine {
       if (speed <= SPEED_EPSILON) {
         stone.velocity.vx = 0;
         stone.velocity.vy = 0;
-        this.recordStonePathSample(stone, deltaSeconds, 0);
-        if (!rotationActive) {
-          if (this.isOutBeforeFarHog(stone)) {
-            this.handleStoneOut(stone);
-            continue;
-          }
-          if (!stone.hasStoppedNotified && this.onStoneStopped) {
-            this.onStoneStopped(stone);
-            stone.hasStoppedNotified = true;
-          }
-        }
         if (rotationActive) {
-          anyMoving = true;
-          stone.hasStoppedNotified = false;
+          stone.rotationRate = 0;
+          stone.rotationActivated = true;
+        }
+        if (this.isOutBeforeFarHog(stone)) {
+          this.handleStoneOut(stone, 'hog');
+          continue;
+        }
+        if (!stone.hasStoppedNotified && this.onStoneStopped) {
+          this.onStoneStopped(stone);
+          stone.hasStoppedNotified = true;
         }
         continue;
       }
@@ -267,7 +279,13 @@ export class PhysicsEngine {
       const avgSpeed = (speed + newSpeed) * 0.5;
       const displacement = avgSpeed * deltaSeconds;
 
-      const headingDelta = this.computeCurlHeadingDelta(stone, speed, displacement, deltaSeconds);
+      const headingDelta = this.computeCurlHeadingDelta(
+        stone,
+        speed,
+        displacement,
+        deltaSeconds,
+        curlMultiplier
+      );
       if (headingDelta !== 0) {
         const cosDelta = Math.cos(headingDelta);
         const sinDelta = Math.sin(headingDelta);
@@ -280,12 +298,11 @@ export class PhysicsEngine {
       const previousY = stone.position.y;
       stone.position.x += dirX * displacement;
       stone.position.y += dirY * displacement;
-      this.recordStonePathSample(stone, deltaSeconds, displacement);
 
       stone.velocity.vx = dirX * newSpeed;
       stone.velocity.vy = dirY * newSpeed;
       if (this.isOutOfBounds(stone)) {
-        this.handleStoneOut(stone);
+        this.handleStoneOut(stone, 'outOfBounds');
         continue;
       }
       this.checkRotationActivation(stone, previousY, rotationActivationY);
@@ -298,7 +315,7 @@ export class PhysicsEngine {
         stone.velocity.vy = 0;
         if (!rotationActive) {
           if (this.isOutBeforeFarHog(stone)) {
-            this.handleStoneOut(stone);
+            this.handleStoneOut(stone, 'hog');
             continue;
           }
           if (!stone.hasStoppedNotified && this.onStoneStopped) {
@@ -376,7 +393,7 @@ export class PhysicsEngine {
     return false;
   }
 
-  handleStoneOut(stone) {
+  handleStoneOut(stone, reason) {
     stone.velocity.vx = 0;
     stone.velocity.vy = 0;
     stone.pendingRotationRate = 0;
@@ -387,6 +404,9 @@ export class PhysicsEngine {
     stone.isOut = true;
     stone.hasStoppedNotified = true;
     this.placeStoneInOutTray(stone);
+    if (this.onStoneOut) {
+      this.onStoneOut(stone, reason);
+    }
     if (this.onStoneStopped) {
       this.onStoneStopped(stone);
     }
@@ -454,58 +474,6 @@ export class PhysicsEngine {
     }
   }
 
-  resetStonePath(stone, includeCurrentPosition = true) {
-    if (includeCurrentPosition) {
-      stone.pathSamples = [{ x: stone.position.x, y: stone.position.y }];
-    } else {
-      stone.pathSamples = [];
-    }
-    stone.pathSampleTimer = 0;
-  }
-
-  recordStonePathSample(stone, deltaSeconds, displacement) {
-    if (!stone.pathSamples) {
-      this.resetStonePath(stone);
-    }
-
-    const moving = displacement > 0 && deltaSeconds > 0;
-    if (moving) {
-      stone.pathSampleTimer = (stone.pathSampleTimer ?? 0) + deltaSeconds;
-      const interval = this.pathSampleInterval ?? DEFAULT_PATH_SAMPLE_INTERVAL;
-      while (stone.pathSampleTimer >= interval) {
-        stone.pathSamples.push({ x: stone.position.x, y: stone.position.y });
-        stone.pathSampleTimer -= interval;
-        this.trimPathSamples(stone);
-      }
-      return;
-    }
-
-    this.appendTerminalPathPoint(stone);
-  }
-
-  appendTerminalPathPoint(stone) {
-    if (!stone.pathSamples || stone.pathSamples.length === 0) {
-      this.resetStonePath(stone);
-      return;
-    }
-    const last = stone.pathSamples[stone.pathSamples.length - 1];
-    const currentX = stone.position.x;
-    const currentY = stone.position.y;
-    if (last.x !== currentX || last.y !== currentY) {
-      stone.pathSamples.push({ x: currentX, y: currentY });
-      this.trimPathSamples(stone);
-    }
-  }
-
-  trimPathSamples(stone) {
-    if (!this.maxPathSamples || !stone.pathSamples) {
-      return;
-    }
-    const excess = stone.pathSamples.length - this.maxPathSamples;
-    if (excess > 0) {
-      stone.pathSamples.splice(0, excess);
-    }
-  }
 
   resolveCollisions(deltaSeconds) {
     const radius = this.stoneRadius ?? 0.145;
@@ -577,6 +545,10 @@ export class PhysicsEngine {
         const relVelYInitial = (stoneA.velocity.vy ?? 0) - (stoneB.velocity.vy ?? 0);
         let relVelAlongNormal = relVelXInitial * normalX + relVelYInitial * normalY;
         const overlapInitial = Math.max(0, minDistance - distance);
+        const impactSpeed = Math.hypot(relVelXInitial, relVelYInitial);
+        if (this.onStoneCollision && impactSpeed > SPEED_EPSILON) {
+          this.onStoneCollision(impactSpeed, stoneA, stoneB);
+        }
 
         let rewindTime = 0;
         if (
@@ -673,7 +645,10 @@ export class PhysicsEngine {
     return generatedMotion;
   }
 
-  computeCurlHeadingDelta(stone, speed, displacement, deltaSeconds) {
+  computeCurlHeadingDelta(stone, speed, displacement, deltaSeconds, curlMultiplier = 1) {
+    if (curlMultiplier <= 0) {
+      return 0;
+    }
     const rotationRate = stone.rotationRate ?? 0;
     const spinDirection = Math.sign(rotationRate);
     const minOmega = this.curlMinOmega ?? DEFAULT_CURL_MIN_OMEGA;
@@ -699,7 +674,7 @@ export class PhysicsEngine {
       return 0;
     }
 
-    const asymmetry = this.curlAsymmetry ?? DEFAULT_CURL_ASYMMETRY;
+    const asymmetry = (this.curlAsymmetry ?? DEFAULT_CURL_ASYMMETRY) * curlMultiplier;
     const velocityBias = Math.max(this.curlVelocityBias ?? DEFAULT_CURL_VELOCITY_BIAS, 0);
     const velocityScaling = 1 / (effectiveSpeed + velocityBias);
 

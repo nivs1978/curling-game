@@ -34,7 +34,5 @@ export class CurlingStone {
     this.angle = angleRadians;
     this.color = color;
     this.hasStoppedNotified = false;
-    this.pathSamples = [{ ...this.position }];
-    this.pathSampleTimer = 0;
   }
 }
