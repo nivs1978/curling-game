@@ -1,3 +1,18 @@
-FROM lipanski/docker-static-website:latest
-WORKDIR /home/static
+# syntax=docker/dockerfile:1
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
+WORKDIR /app
+EXPOSE 8008
+ENV ASPNETCORE_URLS=http://+:8008
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+COPY ["Curling.csproj", "./"]
+RUN dotnet restore "Curling.csproj"
 COPY . .
+RUN dotnet publish "Curling.csproj" -c Release -o /app/publish /p:UseAppHost=false
+
+FROM base AS final
+WORKDIR /app
+COPY --from=build /app/publish .
+ENTRYPOINT ["dotnet", "Curling.dll"]
