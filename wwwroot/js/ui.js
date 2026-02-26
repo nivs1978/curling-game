@@ -2,9 +2,21 @@ export function createUIController({ canvas, getDisplayScale, measurements, scor
 	let scoreboardElement = null;
 	let scoreboardVisible = false;
 	let timerElement = null;
+	let friendTimerElement = null;
+	let practiceBackElement = null;
 	let winnerAnnouncementElement = null;
 	let endScoreAnnouncementElement = null;
 	let menuElement = null;
+	let multiplayerInviteElement = null;
+	let multiplayerInviteLinkElement = null;
+	let multiplayerInviteStatusElement = null;
+	let multiplayerInviteCopyButton = null;
+	let multiplayerInviteCloseButton = null;
+	let multiplayerInviteCreateButton = null;
+	let multiplayerInviteColor = 'red';
+	let multiplayerInviteCreateHandler = null;
+	let centerNoteElement = null;
+	let centerNoteTimeout = null;
 
 	const createScoreboardElement = () => {
 		const container = document.createElement('div');
@@ -150,6 +162,106 @@ export function createUIController({ canvas, getDisplayScale, measurements, scor
 		timerElement.classList.toggle('is-hidden', hidden);
 	};
 
+	const createFriendTimerElement = () => {
+		const el = document.createElement('div');
+		el.className = 'friend-timer';
+		el.setAttribute('role', 'status');
+		el.setAttribute('aria-live', 'polite');
+		el.innerHTML = '<div class="friend-timer-row"><span class="friend-timer-label">Red</span><span class="friend-timer-value">00:00</span></div><div class="friend-timer-row"><span class="friend-timer-label">Yellow</span><span class="friend-timer-value">00:00</span></div>';
+		return el;
+	};
+
+	const mountFriendTimer = () => {
+		friendTimerElement = createFriendTimerElement();
+		const attach = () => {
+			if (!document.body.contains(friendTimerElement)) {
+				document.body.appendChild(friendTimerElement);
+			}
+		};
+		if (document.body) {
+			attach();
+		} else {
+			window.addEventListener('DOMContentLoaded', attach, { once: true });
+		}
+	};
+
+	const setFriendTimerHidden = (hidden) => {
+		if (!friendTimerElement) {
+			return;
+		}
+		friendTimerElement.classList.toggle('is-hidden', hidden);
+	};
+
+	const setFriendTimerText = ({ redText, yellowText, redActive, yellowActive }) => {
+		if (!friendTimerElement) {
+			return;
+		}
+		const rows = friendTimerElement.querySelectorAll('.friend-timer-row');
+		const redRow = rows[0];
+		const yellowRow = rows[1];
+		if (redRow) {
+			const label = redRow.querySelector('.friend-timer-label');
+			const value = redRow.querySelector('.friend-timer-value');
+			if (label) {
+				label.textContent = 'Red';
+			}
+			if (value) {
+				value.textContent = redText;
+			}
+			redRow.classList.add('is-red');
+			redRow.classList.toggle('is-active', !!redActive);
+		}
+		if (yellowRow) {
+			const label = yellowRow.querySelector('.friend-timer-label');
+			const value = yellowRow.querySelector('.friend-timer-value');
+			if (label) {
+				label.textContent = 'Yellow';
+			}
+			if (value) {
+				value.textContent = yellowText;
+			}
+			yellowRow.classList.add('is-yellow');
+			yellowRow.classList.toggle('is-active', !!yellowActive);
+		}
+	};
+
+	const createPracticeBackElement = (onClick) => {
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.className = 'practice-back';
+		button.setAttribute('aria-label', 'Back to menu');
+		button.innerHTML = '<span class="practice-back-icon">❮</span>';
+		button.addEventListener('click', (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			if (onClick) {
+				onClick();
+			}
+		});
+		return button;
+	};
+
+	const mountPracticeBackButton = ({ onClick }) => {
+		practiceBackElement = createPracticeBackElement(onClick);
+		const attach = () => {
+			if (!document.body.contains(practiceBackElement)) {
+				document.body.appendChild(practiceBackElement);
+			}
+		};
+		if (document.body) {
+			attach();
+		} else {
+			window.addEventListener('DOMContentLoaded', attach, { once: true });
+		}
+	};
+
+	const setPracticeBackVisible = (visible) => {
+		if (!practiceBackElement) {
+			return;
+		}
+		practiceBackElement.classList.toggle('is-visible', visible);
+	};
+
 	const createWinnerAnnouncementElement = () => {
 		const el = document.createElement('div');
 		el.className = 'winner-announcement';
@@ -265,6 +377,206 @@ export function createUIController({ canvas, getDisplayScale, measurements, scor
 		menuElement.classList.toggle('visible', visible);
 	};
 
+	const createMultiplayerInviteElement = ({ onCopy, onClose }) => {
+		const overlay = document.createElement('div');
+		overlay.className = 'multiplayer-invite';
+
+		const card = document.createElement('div');
+		card.className = 'multiplayer-invite-card';
+
+		const title = document.createElement('h2');
+		title.textContent = 'Invite a friend';
+
+		multiplayerInviteStatusElement = document.createElement('p');
+		multiplayerInviteStatusElement.className = 'multiplayer-invite-status';
+		multiplayerInviteStatusElement.textContent = 'Creating invite...';
+
+		const colorRow = document.createElement('div');
+		colorRow.className = 'multiplayer-invite-colors';
+		const colorLabel = document.createElement('p');
+		colorLabel.textContent = 'Choose your stone color:';
+		colorRow.appendChild(colorLabel);
+
+		const colorOptions = document.createElement('div');
+		colorOptions.className = 'multiplayer-invite-color-options';
+		['red', 'yellow'].forEach((color) => {
+			const optionLabel = document.createElement('label');
+			optionLabel.className = 'multiplayer-invite-color-option';
+			const input = document.createElement('input');
+			input.type = 'radio';
+			input.name = 'multiplayer-color';
+			input.value = color;
+			input.checked = color === multiplayerInviteColor;
+			input.addEventListener('change', () => {
+				if (input.checked) {
+					multiplayerInviteColor = color;
+				}
+			});
+			const labelText = document.createElement('span');
+			labelText.textContent = color === 'red' ? 'Red' : 'Yellow';
+			optionLabel.appendChild(input);
+			optionLabel.appendChild(labelText);
+			colorOptions.appendChild(optionLabel);
+		});
+
+		colorRow.appendChild(colorOptions);
+
+		const linkRow = document.createElement('div');
+		linkRow.className = 'multiplayer-invite-link';
+
+		multiplayerInviteLinkElement = document.createElement('input');
+		multiplayerInviteLinkElement.type = 'text';
+		multiplayerInviteLinkElement.readOnly = true;
+		multiplayerInviteLinkElement.value = '';
+		multiplayerInviteLinkElement.setAttribute('aria-label', 'Invite link');
+
+		multiplayerInviteCopyButton = document.createElement('button');
+		multiplayerInviteCopyButton.type = 'button';
+		multiplayerInviteCopyButton.textContent = 'Copy link';
+		multiplayerInviteCopyButton.addEventListener('click', (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			if (onCopy) {
+				onCopy(multiplayerInviteLinkElement?.value ?? '');
+			}
+		});
+
+		linkRow.appendChild(multiplayerInviteLinkElement);
+		linkRow.appendChild(multiplayerInviteCopyButton);
+
+		multiplayerInviteCreateButton = document.createElement('button');
+		multiplayerInviteCreateButton.type = 'button';
+		multiplayerInviteCreateButton.className = 'multiplayer-invite-create';
+		multiplayerInviteCreateButton.textContent = 'Create invite';
+		multiplayerInviteCreateButton.addEventListener('click', (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			if (multiplayerInviteCreateHandler) {
+				multiplayerInviteCreateHandler(multiplayerInviteColor);
+			}
+		});
+
+		multiplayerInviteCloseButton = document.createElement('button');
+		multiplayerInviteCloseButton.type = 'button';
+		multiplayerInviteCloseButton.className = 'multiplayer-invite-close';
+		multiplayerInviteCloseButton.textContent = 'Close';
+		multiplayerInviteCloseButton.addEventListener('click', (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			if (onClose) {
+				onClose();
+			}
+		});
+
+		card.appendChild(title);
+		card.appendChild(multiplayerInviteStatusElement);
+		card.appendChild(colorRow);
+		card.appendChild(multiplayerInviteCreateButton);
+		card.appendChild(linkRow);
+		card.appendChild(multiplayerInviteCloseButton);
+		overlay.appendChild(card);
+
+		return overlay;
+	};
+
+	const mountMultiplayerInvite = ({ onCopy, onClose, onCreate }) => {
+		multiplayerInviteElement = createMultiplayerInviteElement({ onCopy, onClose });
+		multiplayerInviteCreateHandler = onCreate ?? null;
+		const attach = () => {
+			if (!document.body.contains(multiplayerInviteElement)) {
+				document.body.appendChild(multiplayerInviteElement);
+			}
+		};
+		if (document.body) {
+			attach();
+		} else {
+			window.addEventListener('DOMContentLoaded', attach, { once: true });
+		}
+	};
+
+	const setMultiplayerInviteVisible = (visible) => {
+		if (!multiplayerInviteElement) {
+			return;
+		}
+		multiplayerInviteElement.classList.toggle('visible', visible);
+	};
+
+	const setMultiplayerInviteLink = (link) => {
+		if (!multiplayerInviteLinkElement) {
+			return;
+		}
+		multiplayerInviteLinkElement.value = link ?? '';
+	};
+
+	const setMultiplayerInviteStatus = (message) => {
+		if (!multiplayerInviteStatusElement) {
+			return;
+		}
+		multiplayerInviteStatusElement.textContent = message ?? '';
+	};
+
+	const setMultiplayerInviteCreateEnabled = (enabled) => {
+		if (!multiplayerInviteCreateButton) {
+			return;
+		}
+		multiplayerInviteCreateButton.disabled = !enabled;
+	};
+
+	const setMultiplayerInviteColor = (color) => {
+		multiplayerInviteColor = color;
+		if (!multiplayerInviteElement) {
+			return;
+		}
+		const inputs = multiplayerInviteElement.querySelectorAll('input[name="multiplayer-color"]');
+		inputs.forEach((input) => {
+			input.checked = input.value === color;
+		});
+	};
+
+	const setMultiplayerInviteRole = (role) => {
+		if (!multiplayerInviteElement) {
+			return;
+		}
+		multiplayerInviteElement.classList.toggle('is-guest', role === 'guest');
+	};
+
+	const createCenterNoteElement = () => {
+		const el = document.createElement('div');
+		el.className = 'center-note';
+		el.setAttribute('role', 'status');
+		el.setAttribute('aria-live', 'polite');
+		el.textContent = '';
+		return el;
+	};
+
+	const mountCenterNote = () => {
+		centerNoteElement = createCenterNoteElement();
+		const attach = () => {
+			if (!document.body.contains(centerNoteElement)) {
+				document.body.appendChild(centerNoteElement);
+			}
+		};
+		if (document.body) {
+			attach();
+		} else {
+			window.addEventListener('DOMContentLoaded', attach, { once: true });
+		}
+	};
+
+	const showCenterNote = (message, durationMs = 4000) => {
+		if (!centerNoteElement) {
+			return;
+		}
+		centerNoteElement.textContent = message;
+		centerNoteElement.classList.add('visible');
+		if (centerNoteTimeout) {
+			clearTimeout(centerNoteTimeout);
+		}
+		centerNoteTimeout = window.setTimeout(() => {
+			centerNoteElement?.classList.remove('visible');
+		}, durationMs);
+	};
+
 	return {
 		mountScoreboard,
 		renderScoreboard,
@@ -273,6 +585,11 @@ export function createUIController({ canvas, getDisplayScale, measurements, scor
 		mountTimer,
 		setTimerText,
 		setTimerHidden,
+		mountFriendTimer,
+		setFriendTimerText,
+		setFriendTimerHidden,
+		mountPracticeBackButton,
+		setPracticeBackVisible,
 		mountWinnerAnnouncement,
 		mountEndScoreAnnouncement,
 		showWinnerAnnouncement,
@@ -281,6 +598,15 @@ export function createUIController({ canvas, getDisplayScale, measurements, scor
 		hideEndScoreAnnouncement,
 		mountMenu,
 		setMenuVisible,
+		mountMultiplayerInvite,
+		setMultiplayerInviteVisible,
+		setMultiplayerInviteLink,
+		setMultiplayerInviteStatus,
+		setMultiplayerInviteCreateEnabled,
+		setMultiplayerInviteColor,
+		setMultiplayerInviteRole,
+		mountCenterNote,
+		showCenterNote,
 		getScoreboardVisible: () => scoreboardVisible
 	};
 }

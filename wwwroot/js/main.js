@@ -83,7 +83,10 @@ import {
 	getCameraFollowStone,
 	getCameraYForLaunch,
 	getCameraYForStoneFromTop,
+	getBaseScale,
 	getDisplayScale,
+	getMaxZoom,
+	clearMinimapPeekZoom,
 	setCameraToEndLineTop,
 	setCameraToHackView,
 	setCameraToLaunchPosition,
@@ -100,6 +103,7 @@ import {
 
 const canvas = document.getElementById('curling-canvas');
 const ctx = canvas?.getContext('2d');
+const signalR = window.signalR;
 
 const BASE_ENDS = 10;
 const scoreboardState = {
@@ -144,6 +148,18 @@ let readyStoneKey = null;
 let currentThrowIndex = 0;
 let lastLaunchedStoneKey = null;
 let nextReadyAllowedAt = 0;
+let multiplayerConnection = null;
+let multiplayerRoomId = null;
+let multiplayerHostColor = null;
+let isCreatingInvite = false;
+let multiplayerPlayerColor = null;
+let lastStoneSyncAt = 0;
+let wasPhysicsRunning = false;
+let wasScoringSequenceActive = false;
+let lastFriendTurnIsLocal = null;
+let lastFriendActiveColor = null;
+let lastPendingRoundActionSent = null;
+let nextEndCountdownTimer = null;
 
 const HOUSE_RADIUS = MEASUREMENTS.rings.redOuter;
 
@@ -206,6 +222,7 @@ const physicsEngine = new PhysicsEngine({
 	sheetExtents: SHEET_EXTENTS,
 	backLineY: BACK_LINE_Y,
 	onStoneStopped: handleStoneStopped,
+	onHogSplit: handleHogFarCross,
 	onHogNearCross: handleHogNearCross,
 	onStoneCollision: audioManager.handleStoneCollision,
 	onStoneOut: audioManager.handleStoneOut
@@ -252,6 +269,39 @@ function startTutorial() {
 	tutorialController.startTutorial();
 }
 
+async function startFriendGame() {
+	hideMenu();
+	uiController.setMultiplayerInviteRole('host');
+	uiController.setMultiplayerInviteVisible(true);
+	uiController.setMultiplayerInviteStatus('Choose your color to create an invite.');
+	uiController.setMultiplayerInviteLink('');
+	uiController.setMultiplayerInviteCreateEnabled(true);
+}
+
+async function createFriendRoom(selectedColor) {
+	if (isCreatingInvite) {
+		return;
+	}
+	isCreatingInvite = true;
+	uiController.setMultiplayerInviteStatus('Creating invite...');
+	uiController.setMultiplayerInviteCreateEnabled(false);
+	try {
+		await ensureMultiplayerConnection();
+		const response = await multiplayerConnection.invoke('CreateRoom', selectedColor);
+		multiplayerRoomId = response.roomId;
+		multiplayerHostColor = response.hostColor;
+		const inviteLink = buildInviteLink(response.roomId);
+		uiController.setMultiplayerInviteLink(inviteLink);
+		uiController.setMultiplayerInviteStatus('Share this link with your friend. Waiting for them to join...');
+	} catch (error) {
+		console.warn('Failed to create multiplayer room:', error);
+		uiController.setMultiplayerInviteStatus('Unable to create invite. Please try again.');
+		uiController.setMultiplayerInviteCreateEnabled(true);
+	} finally {
+		isCreatingInvite = false;
+	}
+}
+
 function setActiveTeamColor(color) {
 	scoreboardState.activeTeamColor = color;
 	renderScoreboard();
@@ -259,6 +309,7 @@ function setActiveTeamColor(color) {
 		timerDisplayColor = color;
 		updateTimerLabel();
 	}
+	updateMultiplayerTurnState();
 }
 
 function resetStonesToHomeTrays() {
@@ -313,6 +364,425 @@ configureCamera({
 	topClampY: 0,
 	minZoom: 0.5
 });
+
+function buildInviteLink(roomId) {
+	const baseUrl = `${window.location.origin}${window.location.pathname}`;
+	return `${baseUrl}?room=${roomId}`;
+}
+
+async function ensureMultiplayerConnection() {
+	if (!signalR) {
+		throw new Error('SignalR client is unavailable.');
+	}
+	if (multiplayerConnection) {
+		return;
+	}
+	const connection = new signalR.HubConnectionBuilder()
+		.withUrl('/multiplayer')
+		.withAutomaticReconnect()
+		.build();
+
+	connection.on('PlayerJoined', (roomData) => {
+		if (!roomData || roomData.roomId !== multiplayerRoomId) {
+			return;
+		}
+		multiplayerHostColor = roomData.hostColor;
+		uiController.setMultiplayerInviteVisible(false);
+		startMultiplayerGame(roomData.startingColor, roomData.hostColor);
+		showMultiplayerRoleNote(roomData.hostColor, roomData.startingColor);
+	});
+
+	connection.on('RoomJoined', (roomData) => {
+		if (!roomData || roomData.roomId !== multiplayerRoomId) {
+			return;
+		}
+		uiController.setMultiplayerInviteVisible(false);
+		startMultiplayerGame(roomData.startingColor, roomData.guestColor);
+		showMultiplayerRoleNote(roomData.guestColor, roomData.startingColor);
+	});
+
+	connection.on('GameEnded', (gameData) => {
+		if (!gameData || gameData.roomId !== multiplayerRoomId) {
+			return;
+		}
+		uiController.setMultiplayerInviteVisible(false);
+		multiplayerRoomId = null;
+		showMenu();
+		uiController.showCenterNote('The other player left the game.');
+	});
+
+	connection.on('TimerUpdate', (timerData) => {
+		if (!timerData || timerData.roomId !== multiplayerRoomId) {
+			return;
+		}
+		teamThinkTimeRemaining[StoneColor.RED] = timerData.redSeconds;
+		teamThinkTimeRemaining[StoneColor.YELLOW] = timerData.yellowSeconds;
+		if (timerData.runningColor === 'red') {
+			timerRunningColor = StoneColor.RED;
+			timerDisplayColor = StoneColor.RED;
+		} else if (timerData.runningColor === 'yellow') {
+			timerRunningColor = StoneColor.YELLOW;
+			timerDisplayColor = StoneColor.YELLOW;
+		} else {
+			timerRunningColor = null;
+		}
+		updateTimerLabel();
+	});
+
+	connection.on('StoneUpdates', (updates) => {
+		if (!multiplayerRoomId || isLocalPlayersTurn()) {
+			return;
+		}
+		applyStoneUpdates(updates);
+	});
+
+	connection.on('StoneSnapshot', (snapshot) => {
+		if (!multiplayerRoomId || isLocalPlayersTurn()) {
+			return;
+		}
+		applyStoneSnapshot(snapshot);
+	});
+
+	connection.on('TurnChanged', (turnData) => {
+		if (!turnData || turnData.roomId !== multiplayerRoomId) {
+			return;
+		}
+		setRemoteTurn(turnData);
+	});
+
+	connection.on('EndScored', (endData) => {
+		if (!endData || endData.roomId !== multiplayerRoomId) {
+			return;
+		}
+		if (isLocalPlayersTurn()) {
+			return;
+		}
+		gameplayController.scoreCurrentEnd();
+		showLastEndScoreAnnouncement();
+	});
+
+	connection.on('NextEndCountdown', (countdownData) => {
+		if (!countdownData || countdownData.roomId !== multiplayerRoomId) {
+			return;
+		}
+		startNextEndCountdown(countdownData.seconds ?? 5);
+	});
+
+	multiplayerConnection = connection;
+	await multiplayerConnection.start();
+}
+
+function sendStoneUpdates(stones) {
+	if (!multiplayerConnection || !multiplayerRoomId || !stones.length) {
+		return;
+	}
+	multiplayerConnection.invoke('UpdateStoneStates', multiplayerRoomId, stones).catch(() => {});
+}
+
+function sendStoneSnapshot(stones) {
+	if (!multiplayerConnection || !multiplayerRoomId || !stones.length) {
+		return;
+	}
+	multiplayerConnection.invoke('SnapshotStoneStates', multiplayerRoomId, stones).catch(() => {});
+}
+
+function sendTurnChange(activeColor) {
+	if (!multiplayerConnection || !multiplayerRoomId) {
+		return;
+	}
+	const activeColorName = activeColor === StoneColor.YELLOW ? 'yellow' : 'red';
+	multiplayerConnection.invoke('CompleteTurn', multiplayerRoomId, activeColorName, currentThrowIndex).catch(() => {});
+}
+
+function sendEndScoredNotification() {
+	if (!multiplayerConnection || !multiplayerRoomId) {
+		return;
+	}
+	multiplayerConnection.invoke('NotifyEndScored', multiplayerRoomId).catch(() => {});
+}
+
+function requestNextEndCountdown(seconds = 5) {
+	if (!multiplayerConnection || !multiplayerRoomId) {
+		return;
+	}
+	multiplayerConnection.invoke('StartNextEndCountdown', multiplayerRoomId, seconds).catch(() => {});
+}
+
+function sendServerStartTurn(color) {
+	if (currentMode !== GameMode.FRIEND || !multiplayerConnection || !multiplayerRoomId) {
+		return;
+	}
+	const colorName = color === StoneColor.YELLOW ? 'yellow' : 'red';
+	multiplayerConnection.invoke('StartTurn', multiplayerRoomId, colorName).catch(() => {});
+}
+
+function sendServerStopTurn() {
+	if (currentMode !== GameMode.FRIEND || !multiplayerConnection || !multiplayerRoomId) {
+		return;
+	}
+	multiplayerConnection.invoke('StopTurn', multiplayerRoomId).catch(() => {});
+}
+
+async function joinFriendGame(roomId) {
+	uiController.setMultiplayerInviteRole('guest');
+	try {
+		hideMenu();
+		await ensureMultiplayerConnection();
+		multiplayerRoomId = roomId;
+		await multiplayerConnection.invoke('JoinRoom', roomId);
+	} catch (error) {
+		console.warn('Failed to join multiplayer room:', error);
+		showMenu();
+		const message = error?.message?.includes('Game already started')
+			? 'Game already started.'
+			: 'Unable to join room. Please check the link.';
+		uiController.showCenterNote(message);
+	}
+}
+
+function showMultiplayerRoleNote(playerColor, startingColor) {
+	const normalizedPlayerColor = playerColor === 'yellow' ? 'yellow' : 'red';
+	const normalizedStartingColor = startingColor === 'yellow' ? 'yellow' : 'red';
+	const startLine = normalizedPlayerColor === normalizedStartingColor
+		? 'You start.'
+		: 'The other player starts.';
+	uiController.showCenterNote(`You are ${normalizedPlayerColor}.\n${startLine}`);
+}
+
+function startMultiplayerGame(startingColor, playerColor) {
+	currentMode = GameMode.FRIEND;
+	minimapHidden = false;
+	lastStoneSyncAt = 0;
+	wasPhysicsRunning = false;
+	lastFriendTurnIsLocal = null;
+	lastFriendActiveColor = null;
+	gameplayController.resetGameState();
+	const normalizedStartingColor = startingColor === 'yellow' ? StoneColor.YELLOW : StoneColor.RED;
+	gameplayController.startNewEnd(normalizedStartingColor);
+	multiplayerPlayerColor = playerColor === 'yellow' ? StoneColor.YELLOW : StoneColor.RED;
+	updateTimerVisibility();
+	updateTimerLabel();
+	sendServerStartTurn(normalizedStartingColor);
+	updateMultiplayerTurnState();
+}
+
+function setSpectatorCameraView() {
+	if (!canvas) {
+		return;
+	}
+	const horizontalSpan = SHEET_EXTENTS.xMax - SHEET_EXTENTS.xMin + (SIDE_BUFFER_METERS * 2);
+	const verticalSpan = SHEET_EXTENTS.yMax - SHEET_EXTENTS.yMin;
+	const widthScale = horizontalSpan > 0 ? canvas.width / horizontalSpan : getDisplayScale();
+	const heightScale = verticalSpan > 0 ? canvas.height / verticalSpan : getDisplayScale();
+	const targetDisplayScale = Math.min(widthScale, heightScale);
+	const targetZoom = targetDisplayScale / getBaseScale();
+	setCameraZoom(Math.min(targetZoom, getMaxZoom()));
+	camera.y = HOG_LINE_NEAR_Y + (115 * FEET_TO_METERS);
+	centerCameraHorizontal();
+	clampCameraPosition({ allowBeyondBottom: true, allowBeyondTop: true });
+}
+
+function setActiveTurnCameraView() {
+	if (!canvas) {
+		return;
+	}
+	const horizontalSpan = SHEET_EXTENTS.xMax - SHEET_EXTENTS.xMin;
+	const desiredWidthFraction = 0.7;
+	const targetSpan = horizontalSpan + (SIDE_BUFFER_METERS * 2);
+	const desiredDisplayScale = (canvas.width * desiredWidthFraction) / targetSpan;
+	const targetZoom = desiredDisplayScale / getBaseScale();
+	setCameraZoom(Math.min(targetZoom, getMaxZoom()));
+	clearMinimapPeekZoom();
+	setCameraToLaunchPosition(LAUNCH_START_Y);
+}
+
+function updateMultiplayerTurnState() {
+	if (currentMode !== GameMode.FRIEND || !multiplayerPlayerColor) {
+		return;
+	}
+	const isPlayerTurn = scoreboardState.activeTeamColor === multiplayerPlayerColor;
+	if (lastFriendTurnIsLocal === isPlayerTurn && lastFriendActiveColor === scoreboardState.activeTeamColor) {
+		return;
+	}
+	lastFriendTurnIsLocal = isPlayerTurn;
+	lastFriendActiveColor = scoreboardState.activeTeamColor;
+	if (isPlayerTurn) {
+		minimapHidden = false;
+		clearCameraFollowStone();
+		setActiveTurnCameraView();
+	} else {
+		minimapHidden = true;
+		clearCameraFollowStone();
+		inputController.resetInteractions();
+		setSpectatorCameraView();
+	}
+}
+
+function isLocalPlayersTurn() {
+	return currentMode === GameMode.FRIEND
+		? (!multiplayerPlayerColor || scoreboardState.activeTeamColor === multiplayerPlayerColor)
+		: true;
+}
+
+function isStoneMoving(stone) {
+	if (!stone?.isLaunched || stone.isOut) {
+		return false;
+	}
+	const speed = Math.hypot(stone.velocity?.vx ?? 0, stone.velocity?.vy ?? 0);
+	const rotation = Math.abs(stone.rotationRate ?? 0);
+	return speed > 0.01 || rotation > 0.01;
+}
+
+function buildStonePayload(stone) {
+	return {
+		color: stone.color,
+		number: stone.number ?? 0,
+		position: { x: stone.position.x, y: stone.position.y },
+		velocity: { x: stone.velocity.vx, y: stone.velocity.vy },
+		rotationRate: stone.rotationRate ?? 0,
+		angle: stone.angle ?? 0,
+		isLaunched: stone.isLaunched,
+		isOut: stone.isOut
+	};
+}
+
+function getMovingStonePayloads() {
+	return physicsEngine
+		.getStones()
+		.filter((stone) => isStoneMoving(stone))
+		.map((stone) => buildStonePayload(stone));
+}
+
+function getAllStonePayloads() {
+	return physicsEngine.getStones().map((stone) => buildStonePayload(stone));
+}
+
+function applyStoneState(state) {
+	const stone = physicsEngine.getStones().find(
+		(entry) => entry.color === state.color && entry.number === state.number
+	);
+	if (!stone) {
+		return;
+	}
+	stone.position = { x: state.position.x, y: state.position.y };
+	stone.velocity = { vx: state.velocity.x, vy: state.velocity.y };
+	stone.rotationRate = state.rotationRate ?? 0;
+	stone.pendingRotationRate = 0;
+	stone.rotationActivated = true;
+	stone.angle = state.angle ?? 0;
+	stone.isLaunched = state.isLaunched;
+	stone.isOut = state.isOut;
+	stone.hasStoppedNotified = !state.isLaunched;
+}
+
+function applyStoneUpdates(updates = []) {
+	if (!Array.isArray(updates)) {
+		return;
+	}
+	updates.forEach((state) => applyStoneState(state));
+	const hasMoving = updates.some((state) => {
+		const speed = Math.hypot(state.velocity?.x ?? 0, state.velocity?.y ?? 0);
+		const rotation = Math.abs(state.rotationRate ?? 0);
+		return speed > 0.01 || rotation > 0.01;
+	});
+	if (hasMoving) {
+		physicsEngine.isActive = true;
+		physicsEngine.lastTimestamp = null;
+	}
+}
+
+function applyStoneSnapshot(snapshot = []) {
+	if (!Array.isArray(snapshot)) {
+		return;
+	}
+	snapshot.forEach((state) => applyStoneState(state));
+	const hasMoving = snapshot.some((state) => {
+		const speed = Math.hypot(state.velocity?.x ?? 0, state.velocity?.y ?? 0);
+		const rotation = Math.abs(state.rotationRate ?? 0);
+		return speed > 0.01 || rotation > 0.01;
+	});
+	if (hasMoving) {
+		physicsEngine.isActive = true;
+		physicsEngine.lastTimestamp = null;
+	} else {
+		physicsEngine.isActive = false;
+		physicsEngine.lastTimestamp = null;
+	}
+}
+
+function setRemoteTurn(turnData) {
+	const activeColor = turnData.activeColor === 'yellow' ? StoneColor.YELLOW : StoneColor.RED;
+	currentThrowIndex = turnData.currentThrowIndex ?? currentThrowIndex;
+	setActiveTeamColor(activeColor);
+	nextTeamColorPending = null;
+}
+
+function handleFriendScoringCamera(timestamp) {
+	if (currentMode !== GameMode.FRIEND) {
+		return;
+	}
+	if (scoringSequence && !wasScoringSequenceActive) {
+		setCameraToEndLineTop(BACK_LINE_Y, HOG_LINE_FAR_Y);
+		scoringSequence.phase = 'removing';
+		scoringSequence.nextRemoveAt = timestamp + SCORE_REMOVE_INTERVAL_MS;
+	}
+	wasScoringSequenceActive = !!scoringSequence;
+}
+
+function showLastEndScoreAnnouncement() {
+	const endIndex = currentEndIndex - 1;
+	if (endIndex < 0) {
+		return;
+	}
+	const redTeam = scoreboardState.teams.find((team) => team.stoneColor === StoneColor.RED);
+	const yellowTeam = scoreboardState.teams.find((team) => team.stoneColor === StoneColor.YELLOW);
+	const redScore = parseInt(redTeam?.scores[endIndex] ?? '0', 10) || 0;
+	const yellowScore = parseInt(yellowTeam?.scores[endIndex] ?? '0', 10) || 0;
+	let message = 'No score';
+	if (redScore > 0 || yellowScore > 0) {
+		if (redScore > yellowScore) {
+			message = `${redTeam?.name ?? 'Red'} scores ${redScore} point${redScore === 1 ? '' : 's'}`;
+		} else {
+			message = `${yellowTeam?.name ?? 'Yellow'} scores ${yellowScore} point${yellowScore === 1 ? '' : 's'}`;
+		}
+	}
+	showEndScoreAnnouncement(message);
+	setScoreboardVisible(true);
+	window.setTimeout(() => hideEndScoreAnnouncement(), SCORE_MESSAGE_DURATION_MS);
+}
+
+function startNextEndCountdown(seconds = 5) {
+	if (nextEndCountdownTimer) {
+		return;
+	}
+	let remaining = Math.max(1, seconds);
+	const tick = () => {
+		uiController.showCenterNote(`Next end starts in ${remaining}...`, 1100);
+		remaining -= 1;
+		if (remaining <= 0) {
+			window.clearInterval(nextEndCountdownTimer);
+			nextEndCountdownTimer = null;
+			gameplayController.handlePendingRoundAction();
+			lastFriendTurnIsLocal = null;
+			lastFriendActiveColor = null;
+			updateMultiplayerTurnState();
+			lastPendingRoundActionSent = null;
+		}
+	};
+	tick();
+	nextEndCountdownTimer = window.setInterval(tick, 1000);
+}
+
+function handlePendingRoundAction() {
+	if (currentMode === GameMode.FRIEND) {
+		if (!pendingRoundAction || nextEndCountdownTimer) {
+			return;
+		}
+		requestNextEndCountdown(5);
+		return;
+	}
+	gameplayController.handlePendingRoundAction();
+}
 configureGraphics({ canvasElement: canvas, context: ctx });
 const uiController = createUIController({
 	canvas,
@@ -320,6 +790,19 @@ const uiController = createUIController({
 	measurements: MEASUREMENTS,
 	scoreboardState
 });
+
+async function handleInviteCopy(link) {
+	if (!link) {
+		return;
+	}
+	try {
+		await navigator.clipboard.writeText(link);
+		uiController.setMultiplayerInviteStatus('Invite link copied.');
+	} catch (error) {
+		console.warn('Copy to clipboard failed:', error);
+		window.prompt('Copy this link:', link);
+	}
+}
 const tutorialController = createTutorialController({
 	GameMode,
 	getCurrentMode: () => currentMode,
@@ -371,12 +854,28 @@ function formatTimer(seconds) {
 }
 
 function updateTimerLabel() {
+	if (currentMode === GameMode.FRIEND) {
+		uiController.setFriendTimerText({
+			redText: formatTimer(teamThinkTimeRemaining[StoneColor.RED]),
+			yellowText: formatTimer(teamThinkTimeRemaining[StoneColor.YELLOW]),
+			redActive: timerRunningColor === StoneColor.RED,
+			yellowActive: timerRunningColor === StoneColor.YELLOW
+		});
+		return;
+	}
 	const displayColor = timerDisplayColor ?? scoreboardState.activeTeamColor;
 	uiController.setTimerText(formatTimer(teamThinkTimeRemaining[displayColor]));
 }
 
 function startThinkingTimer(color) {
 	if (timerRunningColor === color) {
+		return;
+	}
+	if (currentMode === GameMode.FRIEND) {
+		timerRunningColor = color;
+		timerDisplayColor = color;
+		sendServerStartTurn(color);
+		updateTimerLabel();
 		return;
 	}
 	timerRunningColor = color;
@@ -386,12 +885,21 @@ function startThinkingTimer(color) {
 }
 
 function stopThinkingTimer() {
+	if (currentMode === GameMode.FRIEND) {
+		sendServerStopTurn();
+		timerRunningColor = null;
+		updateTimerLabel();
+		return;
+	}
 	timerRunningColor = null;
 	timerLastTimestamp = null;
 	updateTimerLabel();
 }
 
 function updateThinkingTimer(timestamp) {
+	if (currentMode === GameMode.FRIEND) {
+		return;
+	}
 	if (!timerRunningColor || timerLastTimestamp == null) {
 		return;
 	}
@@ -419,7 +927,19 @@ function mountScoreboard() {
 
 function mountTimer() {
 	uiController.mountTimer();
+	updateTimerVisibility();
 	updateTimerLabel();
+}
+
+function mountFriendTimer() {
+	uiController.mountFriendTimer();
+	updateTimerVisibility();
+	updateTimerLabel();
+}
+
+function mountPracticeBackButton() {
+	uiController.mountPracticeBackButton({ onClick: showMenu });
+	updatePracticeBackVisibility();
 }
 
 function mountWinnerAnnouncement() {
@@ -428,6 +948,14 @@ function mountWinnerAnnouncement() {
 
 function mountEndScoreAnnouncement() {
 	uiController.mountEndScoreAnnouncement();
+}
+
+function mountMultiplayerInvite() {
+	uiController.mountMultiplayerInvite({
+		onCopy: handleInviteCopy,
+		onClose: () => uiController.setMultiplayerInviteVisible(false),
+		onCreate: createFriendRoom
+	});
 }
 
 function showWinnerAnnouncement(message) {
@@ -452,7 +980,7 @@ function mountMenu() {
 			{ label: 'Practice', onClick: startPracticeGame },
 			{ label: 'Two player', onClick: startTwoPlayerGame },
 			{ label: 'Play against AI' },
-			{ label: 'Play agaisnt friend' },
+			{ label: 'Play against friend', onClick: startFriendGame },
 			{ label: 'Tutorial', onClick: startTutorial },
 			{ label: 'Rules', onClick: () => window.open('https://worldcurling.org/rules/', '_blank', 'noopener') }
 		]
@@ -465,9 +993,15 @@ function showMenu() {
 	currentMode = GameMode.MENU;
 	minimapHidden = true;
 	uiController.setMenuVisible(true);
-	uiController.setTimerHidden(true);
+	updateTimerVisibility();
+	updatePracticeBackVisibility();
 	inputController.resetInteractions();
+	if (nextEndCountdownTimer) {
+		window.clearInterval(nextEndCountdownTimer);
+		nextEndCountdownTimer = null;
+	}
 	pendingRoundAction = null;
+	lastPendingRoundActionSent = null;
 	endResultCommitted = false;
 	isEndInProgress = false;
 	stopThinkingTimer();
@@ -479,7 +1013,24 @@ function showMenu() {
 function hideMenu() {
 	menuVisible = false;
 	uiController.setMenuVisible(false);
-	uiController.setTimerHidden(false);
+	updateTimerVisibility();
+	updatePracticeBackVisibility();
+}
+
+function updateTimerVisibility() {
+	const hideSharedTimer =
+		menuVisible ||
+		currentMode === GameMode.PRACTICE ||
+		currentMode === GameMode.TUTORIAL ||
+		currentMode === GameMode.FRIEND;
+	uiController.setTimerHidden(hideSharedTimer);
+	uiController.setFriendTimerHidden(menuVisible || currentMode !== GameMode.FRIEND);
+}
+
+function updatePracticeBackVisibility() {
+	uiController.setPracticeBackVisible(
+		!menuVisible && currentMode === GameMode.PRACTICE
+	);
 }
 const inputController = createInputController({
 	canvas,
@@ -489,11 +1040,12 @@ const inputController = createInputController({
 	advanceTutorial: () => tutorialController.advanceTutorial(),
 	isMenuVisible: () => menuVisible,
 	getPendingRoundAction: () => pendingRoundAction,
-	onPendingRoundAction: () => gameplayController.handlePendingRoundAction(),
+	onPendingRoundAction: handlePendingRoundAction,
 	getMinimapHidden: () => minimapHidden,
 	setMinimapHidden: (value) => {
 		minimapHidden = value;
 	},
+	isInteractionAllowed: () => isLocalPlayersTurn(),
 	isPointInMinimap,
 	setCameraToLaunchPosition: () => setCameraToLaunchPosition(LAUNCH_START_Y),
 	setCameraToEndLineTop: () => setCameraToEndLineTop(BACK_LINE_Y, HOG_LINE_FAR_Y),
@@ -697,7 +1249,10 @@ function resizeCanvas() {
 		maxZoom: newMaxZoom
 	});
 
-	const desiredWidthFraction = canvas.width >= canvas.height ? 0.5 : 1;
+	const isLandscape = canvas.width > canvas.height;
+	const desiredWidthFraction = isLandscape
+		? (currentMode === GameMode.TUTORIAL ? 0.5 : 0.7)
+		: 1;
 	const targetSpan = horizontalSpan + (SIDE_BUFFER_METERS * 2);
 	const desiredDisplayScale = (canvas.width * desiredWidthFraction) / targetSpan;
 	let targetZoom = desiredDisplayScale / newBaseScale;
@@ -793,6 +1348,12 @@ function handleHogNearCross() {
 	stopThinkingTimer();
 }
 
+function handleHogFarCross() {
+	if (currentMode === GameMode.FRIEND && !isLocalPlayersTurn()) {
+		setCameraToEndLineTop(BACK_LINE_Y, HOG_LINE_FAR_Y);
+	}
+}
+
 function getThrowSpeed(pullbackMeters) {
 	const ratio = MAX_PULLBACK_METERS > 0
 		? clamp(pullbackMeters / MAX_PULLBACK_METERS, 0, 1)
@@ -851,6 +1412,9 @@ function resetStoneForLaunch(stone, position) {
 }
 
 function ensureReadyStone() {
+	if (!isLocalPlayersTurn()) {
+		return;
+	}
 	if (!isEndInProgress || isGameOver || scoringSequence || physicsEngine.isRunning() || inputController.getDragState()) {
 		return;
 	}
@@ -942,9 +1506,18 @@ function createOutTraySlots({ baseX, baseY, horizontalDirection }) {
 
 mountScoreboard();
 mountTimer();
+mountFriendTimer();
+mountPracticeBackButton();
 mountWinnerAnnouncement();
 mountEndScoreAnnouncement();
+uiController.mountCenterNote();
+mountMultiplayerInvite();
 mountMenu();
+
+const roomIdFromUrl = new URLSearchParams(window.location.search).get('room');
+if (roomIdFromUrl) {
+	joinFriendGame(roomIdFromUrl);
+}
 
 window.addEventListener('resize', resizeCanvas, { passive: true });
 canvas?.addEventListener('pointerdown', inputController.onPointerDown);
@@ -958,11 +1531,37 @@ function animationLoop(timestamp) {
 	gameplayController.updateScoringSequence(timestamp);
 	ensureReadyStone();
 	updateThinkingTimer(timestamp);
-	physicsEngine.update(timestamp);
-	if (!menuVisible && currentMode !== GameMode.TUTORIAL) {
+	const shouldSimulatePhysics = currentMode !== GameMode.FRIEND || isLocalPlayersTurn() || physicsEngine.isRunning();
+	if (shouldSimulatePhysics) {
+		physicsEngine.update(timestamp);
+	}
+	const isRunning = physicsEngine.isRunning();
+	if (currentMode === GameMode.FRIEND && isLocalPlayersTurn()) {
+		if (isRunning && timestamp - lastStoneSyncAt >= 1000) {
+			const movingStones = getMovingStonePayloads();
+			sendStoneUpdates(movingStones);
+			lastStoneSyncAt = timestamp;
+		}
+		if (wasPhysicsRunning && !isRunning) {
+			const snapshot = getAllStonePayloads();
+			sendStoneSnapshot(snapshot);
+			if (!gameplayController.areAllThrowsCompleted()) {
+				const nextColor = getColorForThrowIndex(currentThrowIndex);
+				setActiveTeamColor(nextColor);
+				sendTurnChange(nextColor);
+			}
+		}
+		if (pendingRoundAction && pendingRoundAction !== lastPendingRoundActionSent) {
+			sendEndScoredNotification();
+			lastPendingRoundActionSent = pendingRoundAction;
+		}
+	}
+	wasPhysicsRunning = isRunning;
+	if (!menuVisible && currentMode !== GameMode.TUTORIAL && isLocalPlayersTurn()) {
 		updateCameraFollow();
 	}
 	gameplayController.maybeHandleEndCompletion();
+	handleFriendScoringCamera(timestamp);
 	drawTrack(buildRenderState());
 	requestAnimationFrame(animationLoop);
 }

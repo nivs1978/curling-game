@@ -308,6 +308,9 @@ export function createInputController(config) {
 	}
 
 	function onPointerDown(evt) {
+		if (config.isInteractionAllowed && !config.isInteractionAllowed()) {
+			return;
+		}
 		if (config.isMenuVisible()) {
 			return;
 		}
@@ -371,6 +374,9 @@ export function createInputController(config) {
 	}
 
 	function onPointerMove(evt) {
+		if (config.isInteractionAllowed && !config.isInteractionAllowed()) {
+			return;
+		}
 		if (dragState && dragState.pointerId === evt.pointerId) {
 			if (evt.pointerType === 'touch') {
 				evt.preventDefault();
@@ -388,6 +394,9 @@ export function createInputController(config) {
 	}
 
 	function onPointerUp(evt) {
+		if (config.isInteractionAllowed && !config.isInteractionAllowed()) {
+			return;
+		}
 		if (config.getCurrentMode() === config.gameMode.TUTORIAL) {
 			return;
 		}
@@ -415,6 +424,9 @@ export function createInputController(config) {
 	}
 
 	function onPointerLeave(evt) {
+		if (config.isInteractionAllowed && !config.isInteractionAllowed()) {
+			return;
+		}
 		if (sweepState && sweepState.pointerId === evt.pointerId) {
 			endSweep(evt.pointerId);
 			return;

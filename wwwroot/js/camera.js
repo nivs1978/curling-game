@@ -238,6 +238,10 @@ export function setCameraToLaunchPosition(launchStartY) {
 	clampCameraPosition({ allowBeyondBottom: true });
 }
 
+export function clearMinimapPeekZoom() {
+	minimapPeekPreviousZoom = null;
+}
+
 function clamp(value, min, max) {
 	return Math.min(Math.max(value, min), max);
 }

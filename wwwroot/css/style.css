@@ -43,6 +43,94 @@ body {
   opacity: 0;
 }
 
+.friend-timer {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: 'Space Grotesk', 'Segoe UI', Tahoma, sans-serif;
+  font-size: 20px;
+  font-weight: 600;
+  color: #111;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.7);
+  z-index: 12;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+
+.friend-timer.is-hidden {
+  opacity: 0;
+}
+
+.friend-timer-row {
+  display: grid;
+  grid-template-columns: 84px auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.friend-timer-label {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.friend-timer-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.friend-timer-row.is-active {
+  color: #0d47a1;
+}
+
+.friend-timer-row.is-red {
+  color: #c62828;
+}
+
+.friend-timer-row.is-yellow {
+  color: #b28704;
+}
+
+.practice-back {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.95);
+  color: #0f172a;
+  font-family: 'Space Grotesk', 'Segoe UI', Tahoma, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.25);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  z-index: 14;
+}
+
+.practice-back-icon {
+  display: inline-block;
+  font-size: 22px;
+  line-height: 1;
+  transform: translateY(1px);
+}
+
+.practice-back.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.practice-back:hover {
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.3);
+}
+
 @keyframes scoreboard-enter {
   from {
     opacity: 0;
@@ -246,4 +334,146 @@ body {
 .game-menu button:hover {
   transform: translateY(-1px);
   box-shadow: 0 6px 14px rgba(15, 23, 42, 0.3);
+}
+
+.multiplayer-invite {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.6);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+  z-index: 24;
+}
+
+.multiplayer-invite.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.multiplayer-invite-card {
+  width: min(420px, 90vw);
+  padding: 24px 28px;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.98);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-family: 'Space Grotesk', 'Segoe UI', Tahoma, sans-serif;
+  color: #0f172a;
+}
+
+.multiplayer-invite-card h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.multiplayer-invite-status {
+  margin: 0;
+  font-size: 14px;
+  color: #334155;
+}
+
+.multiplayer-invite-colors {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+  color: #334155;
+}
+
+.multiplayer-invite-colors p {
+  margin: 0;
+}
+
+.multiplayer-invite-color-options {
+  display: flex;
+  gap: 12px;
+}
+
+.multiplayer-invite-color-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.multiplayer-invite-color-option input {
+  accent-color: #0f172a;
+}
+
+.multiplayer-invite-link {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.multiplayer-invite-link input {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+  font-size: 13px;
+}
+
+.multiplayer-invite-link button,
+.multiplayer-invite-create,
+.multiplayer-invite-close {
+  padding: 10px 14px;
+  border: none;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.multiplayer-invite-create:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.multiplayer-invite-close {
+  align-self: flex-end;
+  background: rgba(15, 23, 42, 0.85);
+}
+
+.multiplayer-invite.is-guest .multiplayer-invite-link,
+.multiplayer-invite.is-guest .multiplayer-invite-colors,
+.multiplayer-invite.is-guest .multiplayer-invite-create,
+.multiplayer-invite.is-guest .multiplayer-invite-close {
+  display: none;
+}
+
+.center-note {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.98);
+  padding: 16px 24px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.85);
+  color: #f8fafc;
+  font-family: 'Space Grotesk', 'Segoe UI', Tahoma, sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 2000ms ease, transform 2000ms ease;
+  z-index: 26;
+  text-align: center;
+  white-space: pre-line;
+}
+
+.center-note.visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
 }
